@@ -130,7 +130,7 @@
   },
   "bundle": {
     "active": true,
-    "createUpdaterArtifacts": true,
+    "createUpdaterArtifacts": false,
     "targets": "all",
     "icon": [
       "icons/32x32.png",
@@ -157,7 +157,7 @@
         "installMode": "quiet"
       },
       "endpoints": [
-        "https://github.com/kua8/Nectar/releases/latest/download/latest.json"
+        "https://github.com/emrebayrakk/Nectar/releases/latest/download/latest.json"
       ],
       "pubkey": "dW50cnVzdGVkIGNvbW1lbnQ6IG1pbmlzaWduIHB1YmxpYyBrZXk6IDY2QTJCRjEzRjIxNkI5NkEKUldScXVSYnlFNytpWm0ycmxwTVVUeDdxMjVPdHBzNGJHcm1LT2RFVWVNOC9zd3Y1bHpLM1BwWFIK"
     }
