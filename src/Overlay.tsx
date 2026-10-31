@@ -781,9 +781,11 @@ function OverlayApp() {
           // Wait for exit animation to finish before hiding
           hideWindowTimeoutRef.current = setTimeout(async () => {
             await appWindow.hide();
+            invoke("set_webview_memory_low", { low: true }).catch(() => {});
           }, 400);
         } else {
           // Position the window first, then show
+          invoke("set_webview_memory_low", { low: false }).catch(() => {});
           await invoke('sync_overlay_position');
           await appWindow.show();
         }

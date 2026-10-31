@@ -1,0 +1,119 @@
+/* Dock Quick Settings card. Sits in .add-popup-anchor like the add-app popup, fused into the top of the dock. */
+.qs-popup {
+  pointer-events: auto;
+  width: 340px;
+  height: 400px;
+  box-sizing: border-box;
+  padding: 12px 12px 22px;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  background: var(--nectar-bg-expanded, rgba(30, 30, 30, 0.95));
+  border-radius: 18px;
+  border: 1px solid var(--nectar-border, rgba(255, 255, 255, 0.12));
+  box-shadow: 0 -12px 40px rgba(0, 0, 0, 0.4), 0 0 0 0.5px rgba(255, 255, 255, 0.05) inset;
+  color: var(--nectar-text, white);
+  font-family: inherit;
+  overflow: hidden;
+}
+
+.qs-volume {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 8px 10px;
+  border-radius: 12px;
+  background: var(--nectar-group-bg, rgba(255, 255, 255, 0.06));
+}
+
+.qs-volume-icon {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 26px;
+  height: 26px;
+  padding: 0;
+  border: 0;
+  border-radius: 50%;
+  background: transparent;
+  color: inherit;
+  cursor: pointer;
+  flex-shrink: 0;
+}
+
+.qs-volume-icon:hover {
+  background: var(--nectar-border, rgba(255, 255, 255, 0.12));
+}
+
+.qs-volume-slider {
+  -webkit-appearance: none;
+  appearance: none;
+  flex: 1;
+  height: 4px;
+  border-radius: 2px;
+  outline: none;
+  background: linear-gradient(
+    to right,
+    var(--nectar-text, white) var(--qs-fill, 0%),
+    var(--nectar-border, rgba(255, 255, 255, 0.15)) var(--qs-fill, 0%)
+  );
+  cursor: pointer;
+}
+
+.qs-volume-slider::-webkit-slider-thumb {
+  -webkit-appearance: none;
+  appearance: none;
+  width: 14px;
+  height: 14px;
+  border-radius: 50%;
+  background: var(--nectar-text, white);
+  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.4);
+}
+
+.qs-volume-value {
+  width: 26px;
+  text-align: right;
+  font-size: 12px;
+  font-variant-numeric: tabular-nums;
+  opacity: 0.7;
+}
+
+.qs-tabs {
+  display: grid;
+  grid-template-columns: repeat(3, 1fr);
+  gap: 4px;
+  padding: 3px;
+  border-radius: 10px;
+  background: var(--nectar-group-bg, rgba(255, 255, 255, 0.06));
+}
+
+.qs-tab {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  height: 28px;
+  border: 0;
+  border-radius: 8px;
+  background: transparent;
+  color: var(--nectar-text-muted, rgba(255, 255, 255, 0.6));
+  font-size: 12px;
+  font-family: inherit;
+  cursor: pointer;
+  transition: background 0.15s ease, color 0.15s ease;
+}
+
+.qs-tab:hover {
+  color: var(--nectar-text, white);
+}
+
+.qs-tab.active {
+  background: var(--nectar-border, rgba(255, 255, 255, 0.14));
+  color: var(--nectar-text, white);
+}
+
+.qs-list {
+  flex: 1;
+  min-height: 0;
+  display: flex;
+}

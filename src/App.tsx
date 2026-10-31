@@ -20,6 +20,7 @@ import { useStopwatch } from "./hooks/useStopwatch";
 import { t as translate, useT } from "./i18n";
 import { NotchProgressBorder } from "./components/NotchProgressBorder";
 import type { WidgetConfig } from "./components/StatusWidgetConfig";
+import { parseNotchStyle, parseNotchRadius, isFloatingNotchStyle, NOTCH_FLOAT_GAP } from "./notchStyle";
 import {
   DEFAULT_DUAL_CLOCK_ZONE,
   dayShiftLabel,
@@ -212,21 +213,28 @@ function GreenDownArrowIcon() {
 }
 
 export const Visualizer = memo(function Visualizer({ isPlaying, bars = 5, height = 20 }: { isPlaying: boolean; bars?: number; height?: number }) {
-  const [audioData, setAudioData] = useState<number[]>(new Array(bars).fill(0.18));
+  const barRefs = useRef<(HTMLDivElement | null)[]>([]);
 
+  // Frames arrive ~30 times a second, already smoothed by the backend. Writing transforms
+  // straight to the bars skips a React render and a spring animation per bar per frame.
   useEffect(() => {
+    const paint = (values: number[] | null) => {
+      barRefs.current.forEach((el, i) => {
+        if (!el) return;
+        const value = values ? Math.max(0.2, values[i] ?? 0.18) : 0.1;
+        el.style.transform = `scaleY(${value})`;
+        el.style.opacity = values ? "0.95" : "0.5";
+      });
+    };
+
     if (!isPlaying) {
-      setAudioData(new Array(bars).fill(0.18));
+      paint(null);
       return;
     }
+    paint(new Array(bars).fill(0.18));
 
     const unlisten = listen<{ frequencies: number[] }>("audio-visualization", (event) => {
-      // If we receive fewer frequencies than bars, repeat or interpolate
-      // If more, slice
-      let data = event.payload.frequencies;
-      if (data.length > bars) data = data.slice(0, bars);
-      while (data.length < bars) data.push(0.18);
-      setAudioData(data);
+      paint(event.payload.frequencies);
     });
 
     return () => {
@@ -236,20 +244,12 @@ export const Visualizer = memo(function Visualizer({ isPlaying, bars = 5, height
 
   return (
     <div className="visualizer-horizontal" style={{ height: `${height}px`, width: `${bars * 6}px` }}>
-      {audioData.map((value, i) => (
-        <motion.div
+      {Array.from({ length: bars }, (_, i) => (
+        <div
           key={i}
+          ref={(el) => { barRefs.current[i] = el; }}
           className="bar-horizontal"
-          animate={{
-            scaleY: isPlaying ? Math.max(0.2, value) : 0.1,
-            opacity: isPlaying ? 0.95 : 0.5
-          }}
-          transition={{
-            type: "spring",
-            stiffness: 600,
-            damping: 30,
-            mass: 0.5
-          }}
+          style={{ transform: "scaleY(0.1)", opacity: 0.5 }}
         />
       ))}
     </div>
@@ -288,6 +288,7 @@ interface MediaInfo {
   duration_ms?: number;
   seek_enabled?: boolean;
   position_updated_at?: number;
+  artwork_unchanged?: boolean;
 }
 
 const MARQUEE_SPEED = 30; // px/s — constant for all titles
@@ -683,6 +684,8 @@ function App() {
   const [settingsAmbienceEnabled, setSettingsAmbienceEnabled] = useState(() => localStorage.getItem("nectar-media-ambience-enabled") !== "false");
   const [settingsCompactGlowEnabled, setSettingsCompactGlowEnabled] = useState(() => localStorage.getItem("nectar-media-compact-glow-enabled") !== "false");
   const [settingsCornersEnabled, setSettingsCornersEnabled] = useState(() => localStorage.getItem("nectar-corners-enabled") === "true");
+  const [notchStyle, setNotchStyle] = useState(() => parseNotchStyle(localStorage.getItem("nectar-notch-style")));
+  const [notchRadius, setNotchRadius] = useState(() => parseNotchRadius(localStorage.getItem("nectar-notch-radius")));
   const [mediaLayout, setMediaLayout] = useState<'classic' | 'compact'>(() => (localStorage.getItem("nectar-media-layout") as 'classic' | 'compact') || 'classic');
   const [compactVolumeExpanded, setCompactVolumeExpanded] = useState(false);
 
@@ -730,6 +733,8 @@ function App() {
       setSettingsAmbienceEnabled(getVal("nectar-media-ambience-enabled", "true") !== "false");
       setSettingsCompactGlowEnabled(getVal("nectar-media-compact-glow-enabled", "true") !== "false");
       setSettingsCornersEnabled(getVal("nectar-corners-enabled", "false") === "true");
+      setNotchStyle(parseNotchStyle(getVal("nectar-notch-style")));
+      setNotchRadius(parseNotchRadius(getVal("nectar-notch-radius")));
       setTimeFormat24h(getVal("nectar-time-format-24h") === "true");
       setSettingsLegacyMode(getVal("nectar-legacy-mode") === "true");
 
@@ -865,6 +870,8 @@ function App() {
       "nectar-media-compact-glow-enabled": setSettingsCompactGlowEnabled,
       "nectar-media-layout": setMediaLayout,
       "nectar-corners-enabled": setSettingsCornersEnabled,
+      "nectar-notch-style": (v: unknown) => setNotchStyle(parseNotchStyle(v)),
+      "nectar-notch-radius": (v: unknown) => setNotchRadius(parseNotchRadius(v)),
       "nectar-scale": setScale,
       "nectar-low-battery-threshold": setLowBatteryThreshold,
       "nectar-dock-enabled": setDockEnabled,
@@ -1313,10 +1320,15 @@ function App() {
   // Native Windows Media Controls - Listen for updates from background worker
   useEffect(() => {
     const unlisten = listen<MediaInfo>("media-update", (event) => {
-      const info = event.payload;
-      if (!info) return;
+      const payload = event.payload;
+      if (!payload) return;
 
       setMediaInfo(prev => {
+        // The backend leaves out artwork that hasn't changed since the last update.
+        if (payload.artwork_unchanged && !prev.artwork?.length) {
+          invoke("request_media_artwork").catch(() => {});
+        }
+        const info = payload.artwork_unchanged ? { ...payload, artwork: prev.artwork } : payload;
         // Find if artwork changed by checking the first element
         const prevArt = prev.artwork?.[0];
         const nextArt = info.artwork?.[0];
@@ -1351,6 +1363,8 @@ function App() {
         return info;
       });
     });
+    // A window opened mid-track would otherwise only get artwork-less updates.
+    unlisten.then(() => invoke("request_media_artwork")).catch(() => {});
 
     return () => {
       unlisten.then(fn => fn());
@@ -1661,9 +1675,14 @@ function App() {
     return w;
   };
 
+  const notchFloating = isFloatingNotchStyle(notchStyle);
+  // The fused, edge-hugging shape (square top, concave shoulders) only exists for the attached style.
+  const fused = isImpacted && !notchFloating;
+  const bottomRadius = nectarMode === 'calendar' ? Math.max(28, notchRadius) : notchRadius;
+
   const getDynamicHeight = () => {
     if (!isExpanded || isHidden) {
-      return isImpacted ? 28.9 : 44.2;
+      return fused ? 28.9 : 44.2;
     }
     if (nectarMode === 'tour') return 210;
     if (nectarMode === 'calendar') return settingsCalendarEnabled ? (caldav.connected ? 350 : 310) : 262;
@@ -1717,22 +1736,22 @@ function App() {
       <div style={{ zoom: scale, width: '100%', display: 'flex', justifyContent: 'center' }}>
         <motion.div
           ref={nectarRef}
-          className={`nectar ${isHovered ? 'expanded' : ''} ${isImpacted ? 'is-impacted' : ''}`}
+          className={`nectar notch-style-${notchStyle} ${isHovered ? 'expanded' : ''} ${fused ? 'is-impacted' : ''}`}
           onMouseEnter={() => setIsNotchHovered(true)}
         onMouseLeave={() => setIsNotchHovered(false)}
         onWheel={handleWheel}
         initial={{ y: 250, width: 30.6, height: 44.2, borderTopLeftRadius: 18, borderTopRightRadius: 18, borderBottomLeftRadius: 18, borderBottomRightRadius: 18, scaleX: 1, scaleY: 1, opacity: 0 }}
         animate={{
-          y: !isReady ? 250 : (isHidden ? -100 : 0),
-          width: !isReady ? 34 : (isExpanded && !isHidden ? getDynamicWidth() : (isImpacted ? 39.1 : 30.6)),
+          y: !isReady ? 250 : (isHidden ? -100 : (notchFloating && isImpacted ? NOTCH_FLOAT_GAP : 0)),
+          width: !isReady ? 34 : (isExpanded && !isHidden ? getDynamicWidth() : (fused ? 39.1 : 30.6)),
           height: !isReady ? 34 : getDynamicHeight(),
           opacity: isReady ? 1 : 0,
           scaleX: 1,
           scaleY: 1,
-          borderTopLeftRadius: isImpacted ? 0 : 18,
-          borderTopRightRadius: isImpacted ? 0 : 18,
-          borderBottomLeftRadius: isCalendarMode ? 28 : 18,
-          borderBottomRightRadius: isCalendarMode ? 28 : 18,
+          borderTopLeftRadius: fused ? 0 : (notchFloating ? bottomRadius : 18),
+          borderTopRightRadius: fused ? 0 : (notchFloating ? bottomRadius : 18),
+          borderBottomLeftRadius: isImpacted ? bottomRadius : 18,
+          borderBottomRightRadius: isImpacted ? bottomRadius : 18,
           filter: "blur(0px)",
           pointerEvents: 'auto'
         }}
@@ -2458,9 +2477,9 @@ function App() {
         {showTimerProgressBar && (
           <NotchProgressBorder
             progress={timerProgressPercent}
-            topRadius={isImpacted ? 0 : 18}
-            flare={isImpacted ? 13 : 0}
-            bottomRadius={isCalendarMode ? 28 : 18}
+            topRadius={fused ? 0 : bottomRadius}
+            flare={fused ? 13 : 0}
+            bottomRadius={bottomRadius}
             paused={!isTimerRunning}
             finished={isTimerFinished}
             title={`${formatTimerTime(timerSeconds)} (${Math.round(timerProgressRatio * 100)}%)`}

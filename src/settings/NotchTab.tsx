@@ -27,6 +27,7 @@ import { zoneOffsetLabel } from "../dualClock";
 import type { WidgetConfig, MonitorInfo, MonitorMode } from "./types";
 import { usePerMonitor } from "./usePerMonitor";
 import { useT } from "../i18n";
+import { NotchAppearanceSection } from "./NotchAppearanceSection";
 
 interface NotchTabProps {
   notchMode: string;
@@ -404,6 +405,8 @@ export function NotchTab({
           </div>
         )}
       </div>
+
+      <NotchAppearanceSection />
 
       <div className="setting-group-label">{t("notch.widgets.group")}</div>
       <div className="setting-group">

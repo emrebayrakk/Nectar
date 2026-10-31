@@ -403,6 +403,10 @@ unsafe extern "system" fn focus_event_proc(
             if let Some(cache) = crate::state::THUMBNAIL_CACHE.get() {
                 if let Ok(mut guard) = cache.lock() {
                     guard.insert(hwnd_raw, (img, crate::utils::get_now_ms()));
+                    // This path runs on every focus change, so drop closed windows here too.
+                    if guard.len() > 15 {
+                        guard.retain(|&k, _| unsafe { IsWindow(Some(HWND(k as *mut _))).as_bool() });
+                    }
                 }
             }
         }
@@ -410,6 +414,9 @@ unsafe extern "system" fn focus_event_proc(
 }
 
 static THUMB_CAPTURE_IN_FLIGHT: AtomicBool = AtomicBool::new(false);
+
+/// Set by a notch window that has no artwork yet (it loaded after the last full update).
+pub static MEDIA_RESEND_ARTWORK: AtomicBool = AtomicBool::new(false);
 
 struct ThumbnailCaptureGuard;
 
@@ -666,6 +673,9 @@ pub fn setup_audio_visualization(app_handle: AppHandle) {
                         }
 
                         let mut device_invalidated = false;
+                        // One drain yields several FFT frames that would all land in the same
+                        // display frame, so only the newest is sent to the notch.
+                        let mut latest_output: Option<[f32; NUM_BANDS]> = None;
                         loop {
                             let packet_length = match capture_client.GetNextPacketSize() {
                                 Ok(len) => len,
@@ -743,14 +753,18 @@ pub fn setup_audio_visualization(app_handle: AppHandle) {
                                             output[band_idx] = output[band_idx].clamp(0.18, 1.0);
                                             prev_values[band_idx] = output[band_idx];
                                         }
-                                        let _ = app_handle.emit("audio-visualization", AudioVisualizationData { frequencies: output.to_vec() });
+                                        latest_output = Some(output);
                                         buffer_pos = 0;
                                     }
                                 }
                                 let _ = capture_client.ReleaseBuffer(num_frames);
                             }
                         }
-                        
+
+                        if let Some(output) = latest_output {
+                            let _ = app_handle.emit("audio-visualization", AudioVisualizationData { frequencies: output.to_vec() });
+                        }
+
                         if device_invalidated {
                             return Err("Device invalidated".into());
                         }
@@ -973,7 +987,7 @@ pub fn setup_system_worker(app_handle: AppHandle) -> Sender<SystemCommand> {
                                                 .duration_since(std::time::UNIX_EPOCH)
                                                 .map(|d| d.as_millis() as u64)
                                                 .unwrap_or(0);
-                                            let info = MediaInfo { title, artist, is_playing, has_media: true, artwork, position_ms, duration_ms, seek_enabled, position_updated_at: now_ms };
+                                            let info = MediaInfo { title, artist, is_playing, has_media: true, artwork, position_ms, duration_ms, seek_enabled, position_updated_at: now_ms, artwork_unchanged: false };
                                             if is_playing { best_info = Some(info); break; } else if best_info.is_none() { best_info = Some(info); }
                                         }
                                     }
@@ -981,14 +995,25 @@ pub fn setup_system_worker(app_handle: AppHandle) -> Sender<SystemCommand> {
                             }
                         }
                     }
-                    let current = best_info.unwrap_or(MediaInfo { title: "".into(), artist: "".into(), is_playing: false, has_media: false, artwork: None, position_ms: 0, duration_ms: 0, seek_enabled: false, position_updated_at: 0 });
+                    let current = best_info.unwrap_or(MediaInfo { title: "".into(), artist: "".into(), is_playing: false, has_media: false, artwork: None, position_ms: 0, duration_ms: 0, seek_enabled: false, position_updated_at: 0, artwork_unchanged: false });
                     let art_str = current.artwork.as_ref().and_then(|a| a.first()).cloned();
-                    if last_emitted_info.as_ref().is_none_or(|(t, a, p, h, art, pos, _dur)| {
+                    let resend_art = MEDIA_RESEND_ARTWORK.swap(false, Ordering::Relaxed);
+                    if resend_art || last_emitted_info.as_ref().is_none_or(|(t, a, p, h, art, pos, _dur)| {
                         t != &current.title || a != &current.artist || p != &current.is_playing || h != &current.has_media || art != &art_str ||
                         // For position: emit if >1s difference (avoid spamming on every poll)
                         (*pos - current.position_ms).abs() > 1000
                     }) {
-                        let _ = handle_system.emit("media-update", current.clone());
+                        // Position ticks re-send every second; resending the base64 artwork each time
+                        // made the notch parse a large string per tick and its renderer grow steadily.
+                        let same_art = !resend_art && art_str.is_some() && last_emitted_info.as_ref().is_some_and(|(t, a, _, _, art, _, _)| {
+                            t == &current.title && a == &current.artist && art == &art_str
+                        });
+                        let mut payload = current.clone();
+                        if same_art {
+                            payload.artwork = None;
+                            payload.artwork_unchanged = true;
+                        }
+                        let _ = handle_system.emit("media-update", payload);
                         ANY_MEDIA_PLAYING.store(current.is_playing, Ordering::Relaxed);
                         last_emitted_info = Some((current.title, current.artist, current.is_playing, current.has_media, art_str, current.position_ms, current.duration_ms));
                     }
@@ -1163,7 +1188,7 @@ pub fn setup_system_worker(app_handle: AppHandle) -> Sender<SystemCommand> {
                                                 let scale = cached_scale;
                                                 let d_left = (dr.x as f64 * scale) as i32;
                                                 let d_right = d_left + (dr.width as f64 * scale) as i32;
-                                                let res_h = (56.0 * scale) as i32;
+                                                let res_h = (crate::utils::dock_reserved_logical() * scale) as i32;
                                                 let trigger_y = screen_rect.bottom - res_h;
 
                                                 if rect.left < d_right - 4 && rect.right > d_left + 4 &&
@@ -1259,7 +1284,7 @@ pub fn setup_system_worker(app_handle: AppHandle) -> Sender<SystemCommand> {
                                 crate::state::dock_rects().lock().ok().and_then(|m| m.get(&label).copied()).is_some_and(|dr| {
                                     let d_left = mx + (dr.x as f64 * cached_scale) as i32;
                                     let d_right = d_left + (dr.width as f64 * cached_scale) as i32;
-                                    let trigger_y = screen.bottom - (56.0 * cached_scale) as i32;
+                                    let trigger_y = screen.bottom - (crate::utils::dock_reserved_logical() * cached_scale) as i32;
                                     rect.left < d_right - 4 && rect.right > d_left + 4 && rect.bottom > trigger_y + 4
                                 })
                             } else {
@@ -2671,7 +2696,7 @@ fn register_dock_appbar_inner(window: tauri::WebviewWindow, attempt: i32) {
             return;
         }
 
-        let pr = ((56.0 * nectar_scale) * scale) as i32;
+        let pr = ((crate::utils::dock_reserved_logical() * nectar_scale) * scale) as i32;
 
         
         unsafe {

@@ -1,4 +1,4 @@
-import { useState, useEffect, useLayoutEffect, useMemo, useRef, memo } from 'react';
+import { useState, useEffect, useLayoutEffect, useMemo, useRef, useCallback, memo } from 'react';
 import { motion, AnimatePresence, Reorder } from 'framer-motion';
 import { invoke } from '@tauri-apps/api/core';
 import { listen } from '@tauri-apps/api/event';
@@ -8,6 +8,9 @@ import { initTheme } from './theme';
 import { useSettingsSync } from './hooks/useSettingsSync';
 import { useT } from './i18n';
 import { PlayIcon, PauseIcon, SkipBackIcon, SkipForwardIcon } from './icons';
+import { QuickSettingsPopup } from './components/QuickSettingsPopup';
+import { resolveStartIcon, monoIconStyle } from './startIcons';
+import { parseDockStyle, parseDockIconSize, parseDockHoverScale, isFloatingDockStyle } from './dockStyle';
 
 interface AppInfo {
   name: string;
@@ -95,11 +98,11 @@ function parseDrives(val: string | null): string[] {
   }
 }
 
-// Start button icon: a public asset, or the data URI of an uploaded icon ("custom:" prefix).
-function resolveStartIcon(startIcon: string): string {
-  if (startIcon === "windows") return "/windows.png";
-  if (startIcon.startsWith("custom:")) return startIcon.slice("custom:".length);
-  return "/nectar.png";
+// Start button icon: a preset asset, or the data URI of an uploaded icon ("custom:" prefix).
+function StartButtonIcon({ value }: { value: string }) {
+  const { src, mono, custom } = resolveStartIcon(value);
+  if (mono) return <span className="nectar-icon-img start-icon-mono" style={monoIconStyle(src)} aria-label="Start" />;
+  return <img src={src} alt="Start" className="nectar-icon-img" style={custom ? { borderRadius: "8px" } : undefined} draggable={false} />;
 }
 
 // Stable module-level constants so object references never change between renders,
@@ -128,6 +131,19 @@ function CalendarIcon() {
       <line x1="3" y1="10" x2="21" y2="10" />
       <line x1="8" y1="2.5" x2="8" y2="6.5" />
       <line x1="16" y1="2.5" x2="16" y2="6.5" />
+    </svg>
+  );
+}
+
+// Wi-Fi waves and a speaker side by side, like the Windows taskbar's quick settings button.
+function QuickSettingsIcon() {
+  return (
+    <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round">
+      <path d="M1.5 10.5a8 8 0 0 1 10 0" />
+      <path d="M3.8 13.2a4.6 4.6 0 0 1 5.4 0" />
+      <circle cx="6.5" cy="16" r="0.9" fill="currentColor" stroke="none" />
+      <path d="M14 10h2l3-2.5v9L16 14h-2z" />
+      <path d="M21 9.5a3.5 3.5 0 0 1 0 5" />
     </svg>
   );
 }
@@ -219,6 +235,12 @@ const Dock = memo(function Dock() {
   const [dockDrives, setDockDrives] = useState<string[]>(() => parseDrives(localStorage.getItem("nectar-dock-drives")));
   const [dockIconOnly, setDockIconOnly] = useState(() => localStorage.getItem("nectar-dock-icon-only") === "true");
   const [dockAdaptive, setDockAdaptive] = useState(() => localStorage.getItem("nectar-dock-adaptive") === "true");
+  const [dockStyle, setDockStyle] = useState(() => parseDockStyle(localStorage.getItem("nectar-dock-style")));
+  const [dockIconSize, setDockIconSize] = useState(() => parseDockIconSize(localStorage.getItem("nectar-dock-icon-size")));
+  const [dockHoverScale, setDockHoverScale] = useState(() => parseDockHoverScale(localStorage.getItem("nectar-dock-hover-scale")));
+  const isFloating = isFloatingDockStyle(dockStyle);
+  // Attached keeps its 18px top corners; floating bars round to a pill that scales with the icons.
+  const openRadius = isFloating ? Math.round((dockIconSize + 16) * 0.42) : 18;
   const [startIcon, setStartIcon] = useState(() => localStorage.getItem("nectar-start-icon") || "default");
   const [isMaximized, setIsMaximized] = useState(false);
   const [dockMixedReorder, setDockMixedReorder] = useState(() => localStorage.getItem("nectar-dock-mixed-reorder") === "true");
@@ -228,6 +250,8 @@ const Dock = memo(function Dock() {
   const [isEdgeHovered, setIsEdgeHovered] = useState(false);
   const [isOverlapped, setIsOverlapped] = useState(false);
   const [showAddPopup, setShowAddPopup] = useState(false);
+  const [showQuickSettings, setShowQuickSettings] = useState(false);
+  const [dockQuickSettings, setDockQuickSettings] = useState(() => localStorage.getItem("nectar-dock-quick-settings-enabled") !== "false");
   const [contextMenu, setContextMenu] = useState<{ x: number, y: number, app: AppInfo | null } | null>(null);
   const [contextMenuHeight, setContextMenuHeight] = useState(0);
   const [contextMenuWidth, setContextMenuWidth] = useState(0);
@@ -262,15 +286,15 @@ const Dock = memo(function Dock() {
   // Measure the dock pill when the popup opens. The card tucks ~14px behind it,
   // so the seam stays fused even if the measurement is slightly off.
   useEffect(() => {
-    if (showAddPopup) {
+    if (showAddPopup || showQuickSettings) {
       const h = dockRef.current?.getBoundingClientRect().height ?? 0;
       if (h > 0) setPopupBottom(h / (scale || 1) - 14);
     }
-  }, [showAddPopup, scale]);
+  }, [showAddPopup, showQuickSettings, scale]);
 
   const isCurrentlyHovered = isDockHovered || isEdgeHovered;
   const [interactionState, setInteractionState] = useState<'active' | 'grace' | 'none'>('none');
-  const isAnyInteraction = isCurrentlyHovered || !!contextMenu || showAddPopup;
+  const isAnyInteraction = isCurrentlyHovered || !!contextMenu || showAddPopup || showQuickSettings;
   
   const previewTimerRef = useRef<any>(null);
   const isPreviewHoveredRef = useRef(false);
@@ -293,7 +317,8 @@ const Dock = memo(function Dock() {
   );
 
   // Adaptive mode (fixed dock): stretch to a full-width taskbar while a window is maximized.
-  const isAdaptive = dockAdaptive && dockMode === 'fixed' && isMaximized && isExpanded && !isHidden;
+  // Only the edge-attached style can turn into a taskbar; floating bars keep their shape.
+  const isAdaptive = dockAdaptive && !isFloating && dockMode === 'fixed' && isMaximized && isExpanded && !isHidden;
   // Nearly full width, 24px margin per side. Width is pre-scale, so (viewport - 48*scale) / scale.
   const adaptiveWidth = (viewportWidth - 48 * scale) / scale;
 
@@ -404,6 +429,7 @@ const Dock = memo(function Dock() {
 
       setLegacyMode(getVal("nectar-legacy-mode", "false") === "true");
       setDockTray(getVal("nectar-dock-tray-enabled", "true") !== "false");
+      setDockQuickSettings(getVal("nectar-dock-quick-settings-enabled", "true") !== "false");
       setDockTaskView(getVal("nectar-dock-taskview-enabled", "false") === "true");
       setDockRecycle(getVal("nectar-dock-recycle-enabled", "false") === "true");
       setDockDrives(parseDrives(getVal("nectar-dock-drives", "[]")));
@@ -413,6 +439,10 @@ const Dock = memo(function Dock() {
 
       const adaptive = getVal("nectar-dock-adaptive", "false");
       setDockAdaptive(adaptive === "true");
+
+      setDockStyle(parseDockStyle(getVal("nectar-dock-style")));
+      setDockIconSize(parseDockIconSize(getVal("nectar-dock-icon-size")));
+      setDockHoverScale(parseDockHoverScale(getVal("nectar-dock-hover-scale")));
 
       const startIconVal = getVal("nectar-start-icon", "default") || "default";
       setStartIcon(startIconVal);
@@ -474,11 +504,15 @@ const Dock = memo(function Dock() {
       "nectar-dock-calendar-enabled": setDockCalendarEnabled,
       "nectar-legacy-mode": setLegacyMode,
       "nectar-dock-tray-enabled": (v) => setDockTray(v !== "false"),
+      "nectar-dock-quick-settings-enabled": (v) => setDockQuickSettings(v !== false && v !== "false"),
       "nectar-dock-taskview-enabled": setDockTaskView,
       "nectar-dock-recycle-enabled": setDockRecycle,
       "nectar-dock-drives": (v) => setDockDrives(parseDrives(v)),
       "nectar-dock-icon-only": setDockIconOnly,
       "nectar-dock-adaptive": setDockAdaptive,
+      "nectar-dock-style": (v) => setDockStyle(parseDockStyle(v)),
+      "nectar-dock-icon-size": (v) => setDockIconSize(parseDockIconSize(v)),
+      "nectar-dock-hover-scale": (v) => setDockHoverScale(parseDockHoverScale(v)),
       "nectar-start-icon": setStartIcon,
       "nectar-dock-mixed-reorder": setDockMixedReorder,
       "nectar-scale": setScale,
@@ -682,6 +716,7 @@ const Dock = memo(function Dock() {
 
   const menuRef = useRef<HTMLDivElement>(null);
   const popupRef = useRef<HTMLDivElement>(null);
+  const quickSettingsRef = useRef<HTMLDivElement>(null);
 
 
 
@@ -709,6 +744,11 @@ const Dock = memo(function Dock() {
     setShowAddPopup(false);
     invoke('set_menu_open', { open: false, rect: null }).catch(() => {});
   };
+
+  const closeQuickSettings = useCallback(() => {
+    setShowQuickSettings(false);
+    invoke('set_menu_open', { open: false, rect: null }).catch(() => {});
+  }, []);
 
   useLayoutEffect(() => {
     if (contextMenu && menuRef.current) {
@@ -739,8 +779,8 @@ const Dock = memo(function Dock() {
         height: Math.round(r.height) 
       };
       open = true;
-    } else if (showAddPopup && popupRef.current) {
-      const r = popupRef.current.getBoundingClientRect();
+    } else if ((showAddPopup && popupRef.current) || (showQuickSettings && quickSettingsRef.current)) {
+      const r = (showAddPopup ? popupRef.current! : quickSettingsRef.current!).getBoundingClientRect();
       rect = { 
         x: Math.round(r.x), 
         y: Math.round(r.y), 
@@ -752,7 +792,7 @@ const Dock = memo(function Dock() {
 
     invoke('set_menu_open', { open, rect }).catch(() => {});
 
-  }, [contextMenu, showAddPopup, pinnedApps, activeApps, activeSubmenu, scale]);
+  }, [contextMenu, showAddPopup, showQuickSettings, pinnedApps, activeApps, activeSubmenu, scale]);
 
   const dockItems = useMemo(() => {
     const runningMap = new Map();
@@ -972,9 +1012,11 @@ const Dock = memo(function Dock() {
     };
   }, [hoveredApp, isDragging, dockItems]);
 
+  // Lift grows with the zoom so a big icon still clears the bar instead of overlapping it.
+  const hoverLift = 5 + (dockHoverScale - 1.1) * dockIconSize * 0.5;
   const iconVariants = {
     idle: { y: 0, scale: 1 },
-    hover: { y: -5, scale: 1.1 },
+    hover: { y: -Math.max(0, hoverLift), scale: dockHoverScale },
     drag: { y: -10, scale: 1.1, opacity: 0.8 },
     tap: { scale: 0.95 }
   };
@@ -1052,18 +1094,19 @@ const Dock = memo(function Dock() {
         <motion.div
           ref={dockRef}
           layout
-          className={`dock ${isExpanded && !isHidden ? 'dock-expanded' : ''} ${isImpacted && !isExpanded && !isHidden ? 'dock-impacted' : ''} ${dockIconOnly ? 'dock-icon-only' : ''} ${isAdaptive ? 'dock-adaptive' : ''}`}
+          className={`dock dock-style-${dockStyle} ${isExpanded && !isHidden ? 'dock-expanded' : ''} ${isImpacted && !isExpanded && !isHidden ? 'dock-impacted' : ''} ${dockIconOnly ? 'dock-icon-only' : ''} ${isAdaptive ? 'dock-adaptive' : ''}`}
           onMouseEnter={() => setIsDockHovered(true)}
           onMouseLeave={() => { setIsDockHovered(false); setHoveredApp(null); setPressedApp(null); }}
         initial={{ y: -800, opacity: 1, width: 34, height: 34, borderTopLeftRadius: 17, borderTopRightRadius: 17, borderBottomLeftRadius: 17, borderBottomRightRadius: 17 }}
         animate={{
-          y: !isReady ? -800 : (isHidden ? 100 : 0),
+          // Floating styles leave a 10px gap above the screen edge (reserved in dock_reserved_logical).
+          y: !isReady ? -800 : (isHidden ? 100 : (isFloating ? -10 : 0)),
           width: isExpanded && !isHidden ? (isAdaptive ? adaptiveWidth : 'auto') : 34,
           height: isExpanded && !isHidden ? 'auto' : 34,
-          borderTopLeftRadius: (isImpacted || isExpanded) && !isHidden ? 18 : 17,
-          borderTopRightRadius: (isImpacted || isExpanded) && !isHidden ? 18 : 17,
-          borderBottomLeftRadius: (isImpacted || isExpanded) && !isHidden ? 0 : 17,
-          borderBottomRightRadius: (isImpacted || isExpanded) && !isHidden ? 0 : 17,
+          borderTopLeftRadius: (isImpacted || isExpanded) && !isHidden ? openRadius : 17,
+          borderTopRightRadius: (isImpacted || isExpanded) && !isHidden ? openRadius : 17,
+          borderBottomLeftRadius: (isImpacted || isExpanded) && !isHidden ? (isFloating ? openRadius : 0) : 17,
+          borderBottomRightRadius: (isImpacted || isExpanded) && !isHidden ? (isFloating ? openRadius : 0) : 17,
           opacity: 1,
           scale: scale,
         }}
@@ -1079,7 +1122,7 @@ const Dock = memo(function Dock() {
           opacity: { type: "tween", duration: 0.2 },
           scale: { duration: 0 },
         }}
-        style={{ originX: 0.5, originY: 1, minWidth: 34 }}
+        style={{ originX: 0.5, originY: 1, minWidth: 34, '--dock-icon-size': `${dockIconSize}px` } as React.CSSProperties}
         onContextMenu={(e) => handleContextMenu(e, null)}
       >
         <AnimatePresence>
@@ -1117,7 +1160,7 @@ const Dock = memo(function Dock() {
                       handleAppClick(startItem);
                     }}
                   >
-                    <img src={resolveStartIcon(startIcon)} alt="Start" className="nectar-icon-img" style={startIcon.startsWith("custom:") ? { borderRadius: "8px" } : undefined} draggable={false} />
+                    <StartButtonIcon value={startIcon} />
                   </motion.div>
                 </motion.div>
               )}
@@ -1178,6 +1221,12 @@ const Dock = memo(function Dock() {
                     <CalendarIcon />
                   </motion.div>
                 </motion.div>
+              )}
+
+              {!legacyMode && dockQuickSettings && renderShortcut(
+                'quick-settings', t('quickSettings.title'), 0.205,
+                () => { setContextMenu(null); setShowAddPopup(false); setShowQuickSettings((open) => !open); },
+                <QuickSettingsIcon />
               )}
 
               {!legacyMode && dockTray && renderShortcut(
@@ -1661,6 +1710,17 @@ const Dock = memo(function Dock() {
             scale={scale}
             runningApps={activeApps}
             pinned={pinnedApps}
+            bottom={popupBottom}
+          />
+        )}
+      </AnimatePresence>
+
+      <AnimatePresence>
+        {showQuickSettings && (
+          <QuickSettingsPopup
+            containerRef={quickSettingsRef}
+            onClose={closeQuickSettings}
+            scale={scale}
             bottom={popupBottom}
           />
         )}

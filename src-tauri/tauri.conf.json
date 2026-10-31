@@ -30,7 +30,8 @@
         "skipTaskbar": true,
         "shadow": false,
         "visible": false,
-        "dragDropEnabled": false
+        "dragDropEnabled": false,
+        "additionalBrowserArgs": "--disable-features=msWebOOUI,msPdfOOUI,msSmartScreenProtection,SpareRendererForSitePerProcess,Translate,AutofillServerCommunication"
       },
       {
         "label": "settings",
@@ -50,7 +51,9 @@
         "skipTaskbar": false,
         "shadow": true,
         "visible": false,
-        "center": true
+        "center": true,
+        "additionalBrowserArgs": "--disable-features=msWebOOUI,msPdfOOUI,msSmartScreenProtection,SpareRendererForSitePerProcess,Translate,AutofillServerCommunication",
+        "create": false
       },
       {
         "label": "calendar",
@@ -72,7 +75,9 @@
         "skipTaskbar": false,
         "shadow": true,
         "visible": false,
-        "center": true
+        "center": true,
+        "additionalBrowserArgs": "--disable-features=msWebOOUI,msPdfOOUI,msSmartScreenProtection,SpareRendererForSitePerProcess,Translate,AutofillServerCommunication",
+        "create": false
       },
       {
         "label": "overlay",
@@ -93,7 +98,8 @@
         "focus": false,
         "skipTaskbar": true,
         "shadow": false,
-        "visible": false
+        "visible": false,
+        "additionalBrowserArgs": "--disable-features=msWebOOUI,msPdfOOUI,msSmartScreenProtection,SpareRendererForSitePerProcess,Translate,AutofillServerCommunication"
       },
       {
         "label": "dock",
@@ -114,7 +120,8 @@
         "focus": false,
         "skipTaskbar": true,
         "shadow": false,
-        "visible": false
+        "visible": false,
+        "additionalBrowserArgs": "--disable-features=msWebOOUI,msPdfOOUI,msSmartScreenProtection,SpareRendererForSitePerProcess,Translate,AutofillServerCommunication"
       }
     ],
     "security": {

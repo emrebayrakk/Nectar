@@ -584,7 +584,7 @@ pub async fn open_app(app: AppHandle, app_name: String, args: Option<String>) {
     }
 
     if app_name == "nectar-settings" {
-        open_settings_window(app);
+        open_settings_window(app, None);
         return;
     }
 
@@ -1941,7 +1941,34 @@ pub fn hide_native_osd() {
     }
 }
 
+/// Settings and Calendar are not created at startup (`create: false` in tauri.conf.json)
+/// and are destroyed when closed, so their WebView2 renderer only uses memory while open.
 fn bring_window_to_front(app: &AppHandle, label: &str) {
+    if app.get_webview_window(label).is_some() {
+        focus_existing_window(app, label);
+        return;
+    }
+    let app = app.clone();
+    let label = label.to_string();
+    // Building a webview from the main thread or a sync command can deadlock on Windows.
+    tauri::async_runtime::spawn(async move {
+        if app.get_webview_window(&label).is_none() {
+            let Some(conf) = app.config().app.windows.iter().find(|c| c.label == label).cloned() else { return };
+            let Ok(builder) = tauri::WebviewWindowBuilder::from_config(&app, &conf) else { return };
+            let Ok(win) = builder.build() else { return };
+            #[cfg(target_os = "windows")]
+            {
+                let _ = window_vibrancy::apply_acrylic(&win, Some((10, 10, 15, 20)));
+            }
+            if let Ok(hwnd) = win.hwnd() {
+                crate::active_look::keep_active_look(hwnd);
+            }
+        }
+        focus_existing_window(&app, &label);
+    });
+}
+
+fn focus_existing_window(app: &AppHandle, label: &str) {
     if let Some(win) = app.get_webview_window(label) {
         let _ = win.show();
         let _ = win.unminimize();
@@ -1958,8 +1985,43 @@ fn bring_window_to_front(app: &AppHandle, label: &str) {
 }
 
 #[tauri::command]
-pub fn open_settings_window(app: AppHandle) {
+pub fn open_settings_window(app: AppHandle, tab: Option<String>) {
+    if let Some(tab) = tab {
+        if app.get_webview_window("settings").is_some() {
+            let _ = app.emit_to("settings", "settings-navigate", tab);
+        } else if let Ok(mut pending) = PENDING_SETTINGS_TAB.lock() {
+            // A freshly created window has no listener yet, it picks the tab up on mount.
+            *pending = Some(tab);
+        }
+    }
     bring_window_to_front(&app, "settings");
+}
+
+static PENDING_SETTINGS_TAB: std::sync::Mutex<Option<String>> = std::sync::Mutex::new(None);
+
+#[tauri::command]
+pub fn take_pending_settings_tab() -> Option<String> {
+    PENDING_SETTINGS_TAB.lock().ok().and_then(|mut p| p.take())
+}
+
+#[tauri::command]
+pub fn request_media_artwork() {
+    crate::services::MEDIA_RESEND_ARTWORK.store(true, Ordering::Relaxed);
+}
+
+/// Lets a hidden webview (e.g. the overlay between HUDs) give memory back to the system.
+#[tauri::command]
+pub fn set_webview_memory_low(window: tauri::WebviewWindow, low: bool) {
+    let _ = window.with_webview(move |webview| unsafe {
+        use webview2_com::Microsoft::Web::WebView2::Win32::{
+            ICoreWebView2_19, COREWEBVIEW2_MEMORY_USAGE_TARGET_LEVEL_LOW,
+            COREWEBVIEW2_MEMORY_USAGE_TARGET_LEVEL_NORMAL,
+        };
+        let Ok(core) = webview.controller().CoreWebView2() else { return };
+        let Ok(core19) = core.cast::<ICoreWebView2_19>() else { return };
+        let level = if low { COREWEBVIEW2_MEMORY_USAGE_TARGET_LEVEL_LOW } else { COREWEBVIEW2_MEMORY_USAGE_TARGET_LEVEL_NORMAL };
+        let _ = core19.SetMemoryUsageTargetLevel(level);
+    });
 }
 
 #[tauri::command]
@@ -2788,6 +2850,9 @@ fn re_register_appbars(app: &AppHandle, settings: &HashMap<String, serde_json::V
     }
 }
 
+/// Settings that change how tall a fixed notch or dock's reserved strip is.
+const APPBAR_SIZE_KEYS: [&str; 3] = ["nectar-scale", "nectar-dock-style", "nectar-dock-icon-size"];
+
 const MONITOR_TARGETING_KEYS: [&str; 5] = [
     "nectar-dock-monitor-mode",
     "nectar-dock-monitor-id",
@@ -2810,7 +2875,7 @@ pub fn save_setting(app: AppHandle, key: String, value: serde_json::Value) -> Re
 
     let _ = app.emit("settings-changed", serde_json::json!({ "key": &key, "value": &settings[&key] }));
 
-    if key == "nectar-scale" {
+    if APPBAR_SIZE_KEYS.contains(&key.as_str()) {
         re_register_appbars(&app, &settings);
     }
 
@@ -2955,6 +3020,36 @@ fn get_radio_state_sync(kind: windows::Devices::Radios::RadioKind) -> Result<boo
         }
     }
     Ok(false)
+}
+
+/// Whether this PC has a radio of the given kind. get_radio_state_sync reports a missing
+/// radio as "off", which would show a desktop without Wi-Fi a switch that does nothing.
+fn has_radio_sync(kind: windows::Devices::Radios::RadioKind) -> Result<bool, String> {
+    use windows::Devices::Radios::Radio;
+    unsafe {
+        let _ = windows::Win32::System::Com::CoInitializeEx(
+            None, windows::Win32::System::Com::COINIT_MULTITHREADED,
+        );
+    }
+    let radios = Radio::GetRadiosAsync()
+        .and_then(|op| op.get())
+        .map_err(|e| e.to_string())?;
+    Ok((0..radios.Size().unwrap_or(0))
+        .filter_map(|i| radios.GetAt(i).ok())
+        .any(|radio| radio.Kind().ok() == Some(kind)))
+}
+
+#[tauri::command]
+pub async fn has_radio(kind: String) -> Result<bool, String> {
+    use windows::Devices::Radios::RadioKind;
+    let kind = match kind.as_str() {
+        "wifi" => RadioKind::WiFi,
+        "bluetooth" => RadioKind::Bluetooth,
+        _ => return Err(format!("Unknown radio kind: {kind}")),
+    };
+    tauri::async_runtime::spawn_blocking(move || has_radio_sync(kind))
+        .await
+        .map_err(|e| e.to_string())?
 }
 
 fn set_radio_state_sync(kind: windows::Devices::Radios::RadioKind, enabled: bool) -> Result<(), String> {
@@ -3700,6 +3795,9 @@ pub fn setup_settings_watcher(app: AppHandle) {
                                 "settings-external-changed",
                                 serde_json::json!({ "key": key, "value": null }),
                             );
+                        }
+                        if changed.iter().any(|(k, _)| APPBAR_SIZE_KEYS.contains(&k.as_str())) {
+                            re_register_appbars(&app, &new_settings);
                         }
                     }
                 }

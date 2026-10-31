@@ -27,6 +27,9 @@ pub struct MediaInfo {
     pub seek_enabled: bool,
     #[serde(default)]
     pub position_updated_at: u64,
+    /// Set when `artwork` was left out because it matches the last update the notch got.
+    #[serde(default)]
+    pub artwork_unchanged: bool,
 }
 
 pub enum SystemCommand {

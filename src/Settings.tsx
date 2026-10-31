@@ -42,6 +42,9 @@ function SettingsApp() {
   }, []);
 
   useEffect(() => {
+    invoke<string | null>("take_pending_settings_tab")
+      .then((tab) => { if (tab === "calendar-sync") setActiveTab("calendar-sync"); })
+      .catch(() => {});
     const unlisten = listen<string>("settings-navigate", (e) => {
       if (e.payload === "calendar-sync") setActiveTab("calendar-sync");
     });

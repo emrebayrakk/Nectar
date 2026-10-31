@@ -1,7 +1,8 @@
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { ChevronLeft, Lock, X, Bluetooth, Check, Speaker } from "lucide-react";
 import { useT } from "../i18n";
+import "./ConnectionsView.css";
 
 interface WifiNetwork {
   ssid: string;
@@ -27,6 +28,8 @@ interface Props {
   kind: "wifi" | "bluetooth" | "audio";
   onBack: () => void;
   onOpenWindowsSettings: () => void;
+  /** The dock's Quick Settings switches lists with tabs, so it has no back button. */
+  hideBack?: boolean;
 }
 
 const REFRESH_MS = 6000;
@@ -43,7 +46,7 @@ function SignalBars({ signal }: { signal: number }) {
   );
 }
 
-export function ConnectionsView({ kind, onBack, onOpenWindowsSettings }: Props) {
+export function ConnectionsView({ kind, onBack, onOpenWindowsSettings, hideBack }: Props) {
   const [networks, setNetworks] = useState<WifiNetwork[] | null>(null);
   const [devices, setDevices] = useState<BluetoothDeviceInfo[] | null>(null);
   const [outputs, setOutputs] = useState<OutputDevice[] | null>(null);
@@ -52,6 +55,12 @@ export function ConnectionsView({ kind, onBack, onOpenWindowsSettings }: Props) 
   const [passwordFor, setPasswordFor] = useState<string | null>(null);
   const [password, setPassword] = useState("");
   const [confirmRemove, setConfirmRemove] = useState<string | null>(null);
+  // Wi-Fi / Bluetooth radio. null = unknown or no such radio, which hides the switch.
+  const [radioOn, setRadioOn] = useState<boolean | null>(null);
+  const radioBusyRef = useRef(false);
+  // Asked once per list: a missing radio reads as "off", so the switch needs to know it exists.
+  const radioPresentRef = useRef<boolean | null>(null);
+  const hasRadio = kind === "wifi" || kind === "bluetooth";
 
   useEffect(() => {
     if (passwordFor === null) return;
@@ -62,6 +71,31 @@ export function ConnectionsView({ kind, onBack, onOpenWindowsSettings }: Props) 
   }, [passwordFor]);
 
   const refresh = useCallback(async () => {
+    if (kind === "wifi" || kind === "bluetooth") {
+      // A toggle in flight owns the switch until the radio settles.
+      if (radioBusyRef.current) return;
+      try {
+        if (radioPresentRef.current === null) {
+          radioPresentRef.current = await invoke<boolean>("has_radio", { kind });
+        }
+        if (!radioPresentRef.current) throw new Error("no radio");
+        const on = kind === "wifi"
+          ? (await invoke<{ enabled: boolean }>("get_wifi_status")).enabled
+          : await invoke<boolean>("get_bluetooth_state");
+        if (radioBusyRef.current) return;
+        setRadioOn(on);
+        if (!on) {
+          // Nothing to scan with the radio off.
+          if (kind === "wifi") setNetworks([]);
+          else setDevices([]);
+          setError("");
+          return;
+        }
+      } catch {
+        // No radio of this kind; the list call below reports why.
+        setRadioOn(null);
+      }
+    }
     try {
       if (kind === "wifi") setNetworks(await invoke<WifiNetwork[]>("wifi_scan"));
       else if (kind === "audio") setOutputs(await invoke<OutputDevice[]>("get_audio_devices"));
@@ -95,6 +129,26 @@ export function ConnectionsView({ kind, onBack, onOpenWindowsSettings }: Props) 
     }
   };
 
+  const toggleRadio = async () => {
+    if (radioOn === null || radioBusyRef.current) return;
+    const next = !radioOn;
+    radioBusyRef.current = true;
+    setRadioOn(next);
+    setError("");
+    try {
+      await invoke(kind === "wifi" ? "set_wifi_state" : "set_bluetooth_state", { enabled: next });
+    } catch (e) {
+      setRadioOn(!next);
+      setError(String(e));
+    } finally {
+      // The radio and the network list take a moment to settle after a switch.
+      setTimeout(() => {
+        radioBusyRef.current = false;
+        void refresh();
+      }, 1000);
+    }
+  };
+
   const joinNetwork = (network: WifiNetwork) => {
     if (network.connected) return;
     if (network.secured && !network.known) {
@@ -115,25 +169,43 @@ export function ConnectionsView({ kind, onBack, onOpenWindowsSettings }: Props) 
     void run(ssid, () => invoke("wifi_connect", { ssid, password: key }));
   };
 
+  // A desktop without a Wi-Fi card isn't an error, say so plainly instead of showing the backend's message.
+  const noWifiAdapter = kind === "wifi" && /No Wi-Fi adapter|not available on this PC/.test(error);
   const list = kind === "wifi" ? networks : kind === "audio" ? outputs : devices;
-  const loading = list === null;
-  const empty = list?.length === 0;
+  const radioOff = hasRadio && radioOn === false;
+  const loading = list === null && !radioOff;
+  const empty = list?.length === 0 && !radioOff;
   const title = t(kind === "wifi" ? "connections.wifi.title" : kind === "audio" ? "connections.audio.title" : "connections.bluetooth.title");
   const emptyText = t(kind === "wifi" ? "connections.wifi.empty" : kind === "audio" ? "connections.audio.empty" : "connections.bluetooth.empty");
 
   return (
     <div className="cv-root" onClick={(e) => e.stopPropagation()}>
       <div className="cv-header">
-        <button className="cv-back" onClick={onBack} aria-label={t("common.back")}>
-          <ChevronLeft size={16} />
-        </button>
+        {!hideBack && (
+          <button className="cv-back" onClick={onBack} aria-label={t("common.back")}>
+            <ChevronLeft size={16} />
+          </button>
+        )}
         <span className="cv-title">{title}</span>
         <button className="cv-link" onClick={onOpenWindowsSettings}>{t("connections.windowsSettings")}</button>
+        {hasRadio && radioOn !== null && (
+          <button
+            role="switch"
+            aria-checked={radioOn}
+            aria-label={t(kind === "wifi" ? "cc.wifi" : "cc.bluetooth")}
+            className={`cv-switch${radioOn ? " on" : ""}`}
+            onClick={() => void toggleRadio()}
+          >
+            <span />
+          </button>
+        )}
       </div>
 
       <div className="cv-list">
         {loading && <div className="cv-hint">{kind === "wifi" ? t("connections.scanning") : t("connections.loading")}</div>}
         {!loading && empty && !error && <div className="cv-hint">{emptyText}</div>}
+        {noWifiAdapter && <div className="cv-hint">{t("connections.wifi.noAdapter")}</div>}
+        {radioOff && <div className="cv-hint">{t(kind === "wifi" ? "connections.wifi.off" : "connections.bluetooth.off")}</div>}
 
         {kind === "audio" && outputs?.map((o) => (
           <div
@@ -209,7 +281,7 @@ export function ConnectionsView({ kind, onBack, onOpenWindowsSettings }: Props) 
         ))}
       </div>
 
-      {error && <div className="cv-error">{error}</div>}
+      {error && !noWifiAdapter && <div className="cv-error">{error}</div>}
     </div>
   );
 }

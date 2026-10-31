@@ -478,6 +478,22 @@ pub fn get_nectar_scale(_app: &tauri::AppHandle) -> f64 {
         .unwrap_or(1.0)
 }
 
+/// Dock strip height in logical px (before nectar-scale): the icon plus the bar's padding,
+/// plus the gap below it for the styles that float off the screen edge.
+pub fn dock_reserved_logical() -> f64 {
+    let read = |key: &str| -> Option<String> {
+        let cache = crate::state::SETTINGS_CACHE.get()?;
+        let guard = cache.lock().ok()?;
+        guard.get(key)?.as_str().map(|s| s.to_string())
+    };
+    let icon = read("nectar-dock-icon-size")
+        .and_then(|s| s.parse::<f64>().ok())
+        .unwrap_or(36.0)
+        .clamp(28.0, 52.0);
+    let floating = read("nectar-dock-style").is_some_and(|s| s != "attached");
+    icon + 20.0 + if floating { 10.0 } else { 0.0 }
+}
+
 /// Read any string value from the settings cache. Returns None if the key is absent.
 pub fn get_setting_str(_app: &tauri::AppHandle, key: &str) -> Option<String> {
     let cache = crate::state::SETTINGS_CACHE.get()?;

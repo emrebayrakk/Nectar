@@ -19,7 +19,7 @@ export function WindowControls() {
   return (
     <div className={`wc${focused ? "" : " blurred"}`}>
       <button className="wc-btn minimize" aria-label={t("window.minimize")} onClick={() => win.minimize().catch(() => {})} />
-      <button className="wc-btn close" aria-label={t("window.close")} onClick={() => win.hide().catch(() => {})} />
+      <button className="wc-btn close" aria-label={t("window.close")} onClick={() => win.destroy().catch(() => {})} />
     </div>
   );
 }

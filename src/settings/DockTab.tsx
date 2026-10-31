@@ -1,17 +1,15 @@
 import { useEffect, useState } from "react";
 import type { ChangeEvent, CSSProperties } from "react";
 import { invoke } from "@tauri-apps/api/core";
-import { Monitor, Eye, EyeOff, Circle, Search, Shuffle, MonitorCheck, CalendarDays, Maximize2, Keyboard, Sparkles, RotateCcw, LayoutGrid, Trash2, HardDrive, ChevronUp } from "lucide-react";
+import { Monitor, Eye, EyeOff, Circle, Search, Shuffle, MonitorCheck, CalendarDays, Maximize2, Keyboard, Sparkles, RotateCcw, LayoutGrid, Trash2, HardDrive, ChevronUp, Wifi } from "lucide-react";
 import { SettingRow } from "./SettingRow";
 import { Dropdown } from "./Dropdown";
+import { DockAppearanceSection } from "./DockAppearanceSection";
+import { START_ICON_PRESETS, monoIconStyle } from "../startIcons";
 import type { MonitorInfo, MonitorMode } from "./types";
 import { usePerMonitor } from "./usePerMonitor";
 import { useT } from "../i18n";
-
-const START_ICON_PRESETS = [
-  { key: "default", src: "/nectar.png", label: "Nectar" },
-  { key: "windows", src: "/windows.png", label: "Windows" },
-];
+import { useSettingsSync } from "../hooks/useSettingsSync";
 
 const startIconTileStyle = (active: boolean): CSSProperties => ({
   width: "48px",
@@ -118,6 +116,15 @@ export function DockTab({
   const multiMonitor = dockMonitorMode === "all" && monitors.length > 1;
   const showPerMonitor = multiMonitor && perMonitor.enabled;
   const [drives, setDrives] = useState<DriveInfo[]>([]);
+  const [quickSettings, setQuickSettings] = useState(() => localStorage.getItem("nectar-dock-quick-settings-enabled") !== "false");
+  useSettingsSync({ "nectar-dock-quick-settings-enabled": (v) => setQuickSettings(v !== false && v !== "false") });
+
+  const toggleQuickSettings = () => {
+    const next = !quickSettings;
+    setQuickSettings(next);
+    localStorage.setItem("nectar-dock-quick-settings-enabled", String(next));
+    invoke("save_setting", { key: "nectar-dock-quick-settings-enabled", value: String(next) }).catch(console.error);
+  };
 
   useEffect(() => {
     invoke<DriveInfo[]>("get_drives").then(setDrives).catch(() => {});
@@ -233,6 +240,13 @@ export function DockTab({
 
             {!legacyMode && (
               <>
+                <SettingRow icon={Wifi} label={t("dock.quickSettings")} desc={t("dock.quickSettings.desc")}>
+                  <label className="toggle-switch">
+                    <input type="checkbox" checked={quickSettings} onChange={toggleQuickSettings} />
+                    <span className="slider"></span>
+                  </label>
+                </SettingRow>
+
                 <SettingRow icon={ChevronUp} label={t("dock.tray")} desc={t("dock.tray.desc")}>
                   <label className="toggle-switch">
                     <input type="checkbox" checked={dockTray} onChange={toggleDockTray} />
@@ -318,11 +332,17 @@ export function DockTab({
                 {START_ICON_PRESETS.map((icon) => (
                   <div
                     key={icon.key}
+                    role="button"
+                    aria-pressed={startIcon === icon.key}
                     onClick={() => handleStartIconChange(icon.key)}
                     style={startIconTileStyle(startIcon === icon.key)}
-                    title={icon.label}
+                    title={t(icon.labelKey)}
                   >
-                    <img src={icon.src} alt={icon.label} style={{ width: "100%", height: "100%", objectFit: "contain" }} draggable={false} />
+                    {icon.mono ? (
+                      <span style={{ ...monoIconStyle(icon.src), width: "70%", height: "70%", color: "var(--nectar-text, white)" }} />
+                    ) : (
+                      <img src={icon.src} alt={t(icon.labelKey)} style={{ width: "100%", height: "100%", objectFit: "contain" }} draggable={false} />
+                    )}
                   </div>
                 ))}
                 <div
@@ -358,6 +378,8 @@ export function DockTab({
           </>
         )}
       </div>
+
+      {dockEnabled && <DockAppearanceSection />}
     </>
   );
 }
